@@ -36,6 +36,10 @@ pub fn normalize(request_path: []const u8, out: []u8) NormalizeError![]const u8 
         if (std.mem.eql(u8, segment, ".")) continue;
         if (std.mem.eql(u8, segment, "..")) return NormalizeError.Forbidden;
         if (isWindowsDeviceName(segment)) return NormalizeError.Forbidden;
+        if (comptime builtin.os.tag == .windows) {
+            // Colon in a segment is Alternate Data Stream syntax on Windows.
+            if (std.mem.indexOfScalar(u8, segment, ':') != null) return NormalizeError.Forbidden;
+        }
 
         if (result_len != 0) {
             if (result_len >= out.len) return NormalizeError.PathTooLong;
@@ -152,6 +156,10 @@ test "normalize traversal" {
     try std.testing.expectError(NormalizeError.Forbidden, normalize("/%00", &buf));
     try std.testing.expectError(NormalizeError.Forbidden, normalize("/CON", &buf));
     try std.testing.expectError(NormalizeError.Forbidden, normalize("/con.txt", &buf));
+    if (comptime builtin.os.tag == .windows) {
+        try std.testing.expectError(NormalizeError.Forbidden, normalize("/a:Zone.Identifier", &buf));
+        try std.testing.expectError(NormalizeError.Forbidden, normalize("/file.txt:%24DATA", &buf));
+    }
     try std.testing.expectError(NormalizeError.Forbidden, normalize("/a/PRN/b", &buf));
     try std.testing.expectError(NormalizeError.Forbidden, normalize("/com1", &buf));
     try std.testing.expectError(NormalizeError.Forbidden, normalize("/LPT9.md", &buf));

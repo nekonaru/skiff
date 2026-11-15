@@ -3,6 +3,12 @@ const std = @import("std");
 /// Minimal civil-from-days date conversion (Howard Hinnant's algorithm)
 /// so HTTP dates and log lines do not need extra std machinery.
 
+fn isLeapYear(year: i64) bool {
+    if (@rem(year, 4) != 0) return false;
+    if (@rem(year, 100) != 0) return true;
+    return @rem(year, 400) == 0;
+}
+
 fn civilFromDays(z: i64) struct { year: i32, month: u8, day: u8 } {
     const shifted = z + 719468;
     const era = @divFloor(shifted, 146097);
@@ -146,9 +152,16 @@ pub fn parseHttpDate(text: []const u8) ?i64 {
     }
 
     const day_v = day orelse return null;
-    if (day_v < 1 or day_v > 31) return null;
+    if (day_v < 1) return null;
     const month_v = month orelse return null;
     const year_v = year orelse return null;
+
+    const month_len: u8 = switch (month_v) {
+        4, 6, 9, 11 => 30,
+        2 => if (isLeapYear(year_v)) 29 else 28,
+        else => 31,
+    };
+    if (day_v > month_len) return null;
 
     var time_parts = std.mem.tokenizeScalar(u8, time_part, ':');
     const hour = std.fmt.parseInt(u8, time_parts.next() orelse return null, 10) catch return null;

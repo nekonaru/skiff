@@ -30,16 +30,33 @@ pub const Logger = struct {
         const size_text = formatSize(bytes, &size_buf);
         const duration_ms: u64 = @intCast(@divTrunc(duration_ns, std.time.ns_per_ms));
 
+        var safe_path_buf: [1024]u8 = undefined;
+        const safe_path = sanitizeForLog(path, &safe_path_buf);
+        var safe_method_buf: [16]u8 = undefined;
+        const safe_method = sanitizeForLog(method, &safe_method_buf);
+
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
         var buf: [1024]u8 = undefined;
         var fw = std.Io.File.stdout().writer(self.io, &buf);
         const out = &fw.interface;
-        out.print("{s} {s} {s} {d} {s} {d}ms\n", .{ stamp, method, path, status, size_text, duration_ms }) catch {};
+        out.print("{s} {s} {s} {d} {s} {d}ms\n", .{ stamp, safe_method, safe_path, status, size_text, duration_ms }) catch {};
         out.flush() catch {};
     }
 };
+
+/// Strip anything that is not printable US-ASCII so a hostile request
+/// target cannot forge lines or inject terminal control sequences.
+fn sanitizeForLog(in: []const u8, out: []u8) []const u8 {
+    var o: usize = 0;
+    for (in) |b| {
+        if (o >= out.len) break;
+        out[o] = if (b >= 0x20 and b <= 0x7e) b else '?';
+        o += 1;
+    }
+    return out[0..o];
+}
 
 fn formatSize(size: u64, out: []u8) []const u8 {
     if (size < 1024) return std.fmt.bufPrint(out, "{d} B", .{size}) catch out[0..0];

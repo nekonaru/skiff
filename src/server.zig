@@ -100,6 +100,7 @@ const ConnectionContext = struct {
 const RequestState = struct {
     status: u16 = 200,
     bytes: u64 = 0,
+    response_started: bool = false,
 };
 
 fn connectionThread(ctx: ConnectionContext) void {
@@ -156,7 +157,8 @@ fn handleRequest(
     const method = req.head.method;
     if (method != .GET and method != .HEAD) {
         state.status = 405;
-        state.bytes = sendSimple(req, version, .method_not_allowed, "Method Not Allowed\n", keep_alive, &.{}) catch 0;
+        const allow = [_]http.Header{.{ .name = "allow", .value = "GET, HEAD" }};
+        state.bytes = sendSimple(req, &state, version, .method_not_allowed, "Method Not Allowed\n", keep_alive, &allow) catch 0;
         return state;
     }
 
@@ -167,21 +169,21 @@ fn handleRequest(
 
     if (path_part.len == 0 or path_part[0] != '/') {
         state.status = 400;
-        state.bytes = sendSimple(req, version, .bad_request, "Bad Request\n", keep_alive, &.{}) catch 0;
+        state.bytes = sendSimple(req, &state, version, .bad_request, "Bad Request\n", keep_alive, &.{}) catch 0;
         return state;
     }
 
     var rel_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const rel = fs_guard.normalize(path_part, &rel_buf) catch {
         state.status = 400;
-        state.bytes = sendSimple(req, version, .bad_request, "Bad Request\n", keep_alive, &.{}) catch 0;
+        state.bytes = sendSimple(req, &state, version, .bad_request, "Bad Request\n", keep_alive, &.{}) catch 0;
         return state;
     };
 
     servePath(ctx, alloc, req, &state, rel, query_part) catch {
         state.status = 500;
-        if (state.bytes == 0) {
-            state.bytes = sendSimple(req, version, .internal_server_error, "Internal Server Error\n", keep_alive, &.{}) catch 0;
+        if (!state.response_started) {
+            state.bytes = sendSimple(req, &state, version, .internal_server_error, "Internal Server Error\n", keep_alive, &.{}) catch 0;
         }
     };
     return state;
@@ -198,38 +200,44 @@ fn servePath(
     const version = req.head.version;
     const keep_alive = req.head.keep_alive;
 
-    var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // Directory? Serve index.html, or the listing, or redirect to the
+    // trailing-slash form. With --no-listing, missing index.html hides the
+    // directory entirely (404, even with a trailing slash).
+    if (openContainedDir(ctx, rel)) |d| {
+        var dir = d;
+        defer dir.close(ctx.io);
 
-    // Directories: index.html, then listing; else redirect to trailing slash.
-    if (resolveAbs(ctx, rel, &abs_buf)) |abs_len| {
-        const abs = abs_buf[0..abs_len];
-        if (isDirectoryAbs(ctx, abs)) {
-            const path_no_query = req.head.target[0 .. std.mem.indexOfScalar(u8, req.head.target, '?') orelse req.head.target.len];
-            if (!std.mem.endsWith(u8, path_no_query, "/")) {
-                const location = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ path_no_query, if (query_part) |q| q else "" });
-                defer alloc.free(location);
-                const headers = [_]http.Header{.{ .name = "location", .value = location }};
-                state.status = 301;
-                state.bytes = try sendSimple(req, version, .moved_permanently, "Moved Permanently\n", keep_alive, &headers);
-                return;
-            }
-            const index_rel = if (rel.len == 0) @constCast("index.html") else try std.fmt.allocPrint(alloc, "{s}/index.html", .{rel});
-            defer if (rel.len != 0) alloc.free(index_rel);
-            if (tryServeFile(ctx, req, state, index_rel)) return;
+        const path_no_query = req.head.target[0 .. std.mem.indexOfScalar(u8, req.head.target, '?') orelse req.head.target.len];
+        if (!std.mem.endsWith(u8, path_no_query, "/")) {
+            // With --no-listing, directories are indistinguishable from missing paths.
             if (ctx.cfg.no_listing) {
-                state.status = 403;
-                state.bytes = try sendSimple(req, version, .forbidden, "Forbidden\n", keep_alive, &.{});
+                state.status = 404;
+                state.bytes = try sendSimple(req, state, version, .not_found, "Not Found\n", keep_alive, &.{});
                 return;
             }
-            return serveListing(ctx, alloc, req, state, rel, abs);
+            const location = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ path_no_query, if (query_part) |q| q else "" });
+            defer alloc.free(location);
+            const headers = [_]http.Header{.{ .name = "location", .value = location }};
+            state.status = 301;
+            state.bytes = try sendSimple(req, state, version, .moved_permanently, "Moved Permanently\n", keep_alive, &headers);
+            return;
         }
-    } else |err| switch (err) {
+        const index_rel = if (rel.len == 0) @constCast("index.html") else try std.fmt.allocPrint(alloc, "{s}/index.html", .{rel});
+        defer if (rel.len != 0) alloc.free(index_rel);
+        if (tryServeFile(ctx, req, state, index_rel)) return;
+        if (ctx.cfg.no_listing) {
+            state.status = 404;
+            state.bytes = try sendSimple(req, state, version, .not_found, "Not Found\n", keep_alive, &.{});
+            return;
+        }
+        return serveListing(ctx, alloc, req, state, rel, dir);
+    } else |dir_err| switch (dir_err) {
+        error.NotFound => {},
         error.Contains => {
             state.status = 403;
-            state.bytes = try sendSimple(req, version, .forbidden, "Forbidden\n", keep_alive, &.{});
+            state.bytes = try sendSimple(req, state, version, .forbidden, "Forbidden\n", keep_alive, &.{});
             return;
         },
-        error.NotFound => {},
         error.Internal => return error.Internal,
     }
 
@@ -241,11 +249,11 @@ fn servePath(
     }
 
     state.status = 404;
-    state.bytes = try sendSimple(req, version, .not_found, "Not Found\n", keep_alive, &.{});
+    state.bytes = try sendSimple(req, state, version, .not_found, "Not Found\n", keep_alive, &.{});
 }
 
-/// Resolve `rel` (already normalized) to an absolute canonical path inside
-/// the root. `out` receives the path; returns its length.
+/// Resolve `rel` to its absolute, containment-checked path on Linux/macOS.
+/// Kept for macOS, where fd-path introspection is not portable.
 fn resolveAbs(ctx: ConnectionContext, rel: []const u8, out: []u8) error{ Contains, NotFound, Internal }!usize {
     if (rel.len == 0) {
         const n = ctx.root_dir.realPath(ctx.io, out) catch return error.Internal;
@@ -259,10 +267,108 @@ fn resolveAbs(ctx: ConnectionContext, rel: []const u8, out: []u8) error{ Contain
     return n;
 }
 
-fn isDirectoryAbs(ctx: ConnectionContext, abs: []const u8) bool {
-    var dir = std.Io.Dir.openDirAbsolute(ctx.io, abs, .{}) catch return false;
-    dir.close(ctx.io);
-    return true;
+/// Canonical path of an open directory or file handle, when the platform
+/// allows it. Returns null elsewhere (e.g. macOS).
+fn fdAbsPath(handle: anytype, out: []u8) ?usize {
+    if (comptime builtin.os.tag == .linux) {
+        var fd_path: [64]u8 = undefined;
+        const pathz = std.fmt.bufPrintSentinel(&fd_path, "/proc/self/fd/{d}", .{@as(std.posix.fd_t, @intCast(handle))}, 0) catch return null;
+        const n = std.os.linux.readlink(pathz.ptr, out.ptr, out.len);
+        if (std.os.linux.errno(n) != .SUCCESS) return null;
+        if (n == 0 or n >= out.len) return null;
+        return n;
+    }
+    if (comptime builtin.os.tag == .windows) {
+        var wide: [std.os.windows.PATH_MAX_WIDE]u16 = undefined;
+        const wide_slice = std.Io.Threaded.GetFinalPathNameByHandle(
+            @ptrCast(handle),
+            .{ .volume_name = .Dos },
+            &wide,
+        ) catch return null;
+        const len = std.unicode.wtf16LeToWtf8(out, wide_slice);
+        if (len == 0 or len >= out.len) return null;
+        return len;
+    }
+    return null;
+}
+
+/// Open `rel` as a file with the containment guarantee enforced on the
+/// open handle itself (no check-then-open window on Linux and Windows).
+/// On macOS this falls back to realpath-then-open (documented residual).
+fn openContainedFile(ctx: ConnectionContext, rel: []const u8) error{ Contains, NotFound, Internal, IsDir }!std.Io.File {
+    if (builtin.os.tag == .macos) {
+        var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const abs_len = resolveAbs(ctx, rel, &abs_buf) catch |err| switch (err) {
+            error.NotFound => return error.NotFound,
+            error.Contains => return error.Contains,
+            error.Internal => return error.Internal,
+        };
+        return std.Io.Dir.openFileAbsolute(ctx.io, abs_buf[0..abs_len], .{}) catch |err| switch (err) {
+            error.IsDir => return error.IsDir,
+            error.FileNotFound, error.NotDir => return error.NotFound,
+            else => return error.Internal,
+        };
+    }
+
+    const linux_open = comptime builtin.os.tag == .linux;
+    if (linux_open) {
+        var relz_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const relz = std.fmt.bufPrintSentinel(&relz_buf, "{s}", .{rel}, 0) catch return error.Internal;
+        const rc = std.os.linux.openat(ctx.root_dir.handle, relz.ptr, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
+        if (std.os.linux.errno(rc) != .SUCCESS) {
+            return switch (std.os.linux.errno(rc)) {
+                .NOENT, .NOTDIR, .ACCES => error.NotFound,
+                .ISDIR => error.IsDir,
+                else => error.Internal,
+            };
+        }
+        return finishFileContain(ctx, .{ .handle = @intCast(rc), .flags = .{ .nonblocking = true } });
+    }
+
+    const file = ctx.root_dir.openFile(ctx.io, rel, .{}) catch |err| switch (err) {
+        error.IsDir => return error.IsDir,
+        else => return error.NotFound,
+    };
+    return finishFileContain(ctx, file);
+}
+
+fn finishFileContain(ctx: ConnectionContext, file: std.Io.File) error{ Contains, Internal }!std.Io.File {
+    var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const abs_len = fdAbsPath(file.handle, &abs_buf) orelse {
+        file.close(ctx.io);
+        return error.Internal;
+    };
+    if (!fs_guard.isPathInside(ctx.root_real, abs_buf[0..abs_len])) {
+        file.close(ctx.io);
+        return error.Contains;
+    }
+    return file;
+}
+
+/// Open `rel` as a directory (iterate access) with containment enforced on the
+/// open handle. macOS falls back to realpath-then-open.
+fn openContainedDir(ctx: ConnectionContext, rel: []const u8) error{ Contains, NotFound, Internal }!std.Io.Dir {
+    if (builtin.os.tag == .macos) {
+        var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const abs_len = resolveAbs(ctx, rel, &abs_buf) catch |err| switch (err) {
+            error.NotFound => return error.NotFound,
+            error.Contains => return error.Contains,
+            error.Internal => return error.Internal,
+        };
+        return std.Io.Dir.openDirAbsolute(ctx.io, abs_buf[0..abs_len], .{ .iterate = true }) catch error.NotFound;
+    }
+
+    var dir = ctx.root_dir.openDir(ctx.io, if (rel.len == 0) "." else rel, .{ .iterate = true }) catch return error.NotFound;
+    var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const abs_len = fdAbsPath(dir.handle, &abs_buf) orelse {
+        dir.close(ctx.io);
+        return error.Internal;
+    };
+    if (!fs_guard.isPathInside(ctx.root_real, abs_buf[0..abs_len])) {
+        dir.close(ctx.io);
+        return error.Contains;
+    }
+    return dir;
 }
 
 /// Try to stream `rel` as a regular file. Returns true once a response was sent.
@@ -275,31 +381,27 @@ fn tryServeFile(
     const version = req.head.version;
     const keep_alive = req.head.keep_alive;
 
-    var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const abs_len = resolveAbs(ctx, rel, &abs_buf) catch |err| switch (err) {
-        error.NotFound => return false,
+    var file = openContainedFile(ctx, rel) catch |err| switch (err) {
+        error.NotFound, error.IsDir => return false,
         error.Contains => {
             state.status = 403;
-            state.bytes = sendSimple(req, version, .forbidden, "Forbidden\n", keep_alive, &.{}) catch 0;
+            state.bytes = sendSimple(req, state, version, .forbidden, "Forbidden\n", keep_alive, &.{}) catch 0;
             return true;
         },
         error.Internal => {
             state.status = 500;
-            state.bytes = sendSimple(req, version, .internal_server_error, "Internal Server Error\n", keep_alive, &.{}) catch 0;
+            state.bytes = sendSimple(req, state, version, .internal_server_error, "Internal Server Error\n", keep_alive, &.{}) catch 0;
             return true;
         },
     };
-    const abs = abs_buf[0..abs_len];
-
-    var file = std.Io.Dir.openFileAbsolute(ctx.io, abs, .{}) catch return false;
     defer file.close(ctx.io);
     const stat = file.stat(ctx.io) catch return false;
     if (stat.kind != .file) return false;
 
     streamFile(ctx, req, state, rel, file, stat) catch {
         state.status = 500;
-        if (state.bytes == 0) {
-            state.bytes = sendSimple(req, version, .internal_server_error, "Internal Server Error\n", keep_alive, &.{}) catch 0;
+        if (!state.response_started) {
+            state.bytes = sendSimple(req, state, version, .internal_server_error, "Internal Server Error\n", keep_alive, &.{}) catch 0;
         }
     };
     return true;
@@ -315,6 +417,7 @@ fn streamFile(
 ) !void {
     const version = req.head.version;
     const keep_alive = req.head.keep_alive;
+    state.response_started = true;
     const size: u64 = stat.size;
     const mtime_sec: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_s));
 
@@ -347,7 +450,7 @@ fn streamFile(
     if (not_modified) {
         state.status = 304;
         const headers_304 = headers[1..]; // drop content-type
-        state.bytes = try sendSimpleTransferNone(req, version, .not_modified, headers_304, keep_alive);
+        state.bytes = try sendSimpleTransferNone(req, state, version, .not_modified, headers_304, keep_alive);
         return;
     }
 
@@ -374,7 +477,7 @@ fn streamFile(
                     .{ .name = "server", .value = server_version },
                 };
                 state.status = 416;
-                state.bytes = try sendSimple(req, version, .range_not_satisfiable, "Range Not Satisfiable\n", keep_alive, &h);
+                state.bytes = try sendSimple(req, state, version, .range_not_satisfiable, "Range Not Satisfiable\n", keep_alive, &h);
                 return;
             },
             .single => |s| {
@@ -490,14 +593,15 @@ fn ifNoneMatchMatches(value: []const u8, etag: []const u8) bool {
     return false;
 }
 
-/// If-Range: either our ETag (weak comparison) or an HTTP date that is not
-/// earlier than the file mtime.
+/// If-Range: exact match against our (weak) ETag is the only entity-tag
+/// comparison that can pass, since we never send a strong ETag; a quoted
+/// strong form can never match it, which is correct under RFC 7233's strong
+/// comparison. A date is honored only when it is not earlier than the file
+/// mtime.
 fn ifRangeMatches(value: []const u8, etag: []const u8, mtime_sec: i64) bool {
     const trimmed = std.mem.trim(u8, value, " \t");
-    if (std.mem.startsWith(u8, trimmed, "W/") or std.mem.startsWith(u8, trimmed, "\"")) {
-        const tag = weakEtag(etag);
-        const other = weakEtag(trimmed);
-        return std.mem.eql(u8, tag, other);
+    if (std.mem.startsWith(u8, trimmed, "\"") or std.mem.startsWith(u8, trimmed, "W/")) {
+        return std.mem.eql(u8, trimmed, etag);
     }
     if (timefmt.parseHttpDate(trimmed)) |seconds| {
         return mtime_sec <= seconds;
@@ -515,15 +619,25 @@ fn ifModifiedSinceMatches(value: []const u8, mtime_sec: i64) bool {
 /// Small response with a known body. Sets Content-Length automatically.
 fn sendSimple(
     req: *http.Server.Request,
+    state: *RequestState,
     version: http.Version,
     status: http.Status,
     body: []const u8,
     keep_alive: bool,
     extra: []const http.Header,
 ) !u64 {
-    var merged: [12]http.Header = undefined;
+    state.response_started = true;
+    var merged: [14]http.Header = undefined;
     var count = extra.len;
     std.mem.copyForwards(http.Header, merged[0..count], extra);
+    if (!hasHeader(extra, "content-type")) {
+        merged[count] = .{ .name = "content-type", .value = "text/plain; charset=utf-8" };
+        count += 1;
+    }
+    if (!hasHeader(extra, "x-content-type-options")) {
+        merged[count] = .{ .name = "x-content-type-options", .value = "nosniff" };
+        count += 1;
+    }
     if (!hasHeader(extra, "server")) {
         merged[count] = .{ .name = "server", .value = server_version };
         count += 1;
@@ -541,12 +655,13 @@ fn sendSimple(
 /// the connection reusable under HTTP/1.1.
 fn sendSimpleTransferNone(
     req: *http.Server.Request,
+    state: *RequestState,
     version: http.Version,
     status: http.Status,
     extra: []const http.Header,
     keep_alive: bool,
 ) !u64 {
-    return sendSimple(req, version, status, "", keep_alive, extra);
+    return sendSimple(req, state, version, status, "", keep_alive, extra);
 }
 
 fn hasHeader(headers: []const http.Header, name: []const u8) bool {
@@ -562,17 +677,13 @@ fn serveListing(
     req: *http.Server.Request,
     state: *RequestState,
     rel: []const u8,
-    abs: []const u8,
+    dir_handle: std.Io.Dir,
 ) !void {
     const version = req.head.version;
     const keep_alive = req.head.keep_alive;
 
-    var dir = std.Io.Dir.openDirAbsolute(ctx.io, abs, .{ .iterate = true }) catch {
-        state.status = 500;
-        state.bytes = try sendSimple(req, version, .internal_server_error, "Internal Server Error\n", keep_alive, &.{});
-        return;
-    };
-    defer dir.close(ctx.io);
+    // Ownership of the directory handle stays with the caller.
+    var dir = dir_handle;
 
     var entries: std.ArrayList(listing.Entry) = .empty;
     defer entries.deinit(alloc);
@@ -585,9 +696,10 @@ fn serveListing(
             break;
         }
         const is_dir = entry.kind == .directory;
+        const is_link = entry.kind == .sym_link;
         const name_copy = try alloc.dupe(u8, entry.name);
         var size: u64 = 0;
-        if (!is_dir) {
+        if (!is_dir and !is_link) {
             if (dir.statFile(ctx.io, entry.name, .{})) |stat| {
                 size = stat.size;
             } else |_| {
@@ -620,22 +732,72 @@ fn serveListing(
     }
 
     state.status = 200;
-    state.bytes = try sendSimple(req, version, .ok, body.items, keep_alive, &.{
+    state.bytes = try sendSimple(req, state, version, .ok, body.items, keep_alive, &.{
         .{ .name = "content-type", .value = "text/html; charset=utf-8" },
         .{ .name = "cache-control", .value = "no-cache" },
+        .{ .name = "content-security-policy", .value = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'" },
     });
 }
 
 fn setReadTimeout(stream: std.Io.net.Stream, seconds: u32) void {
-    if (comptime builtin.os.tag == .linux) {
-        // On Linux, SO_RCVTIMEO keeps a silent client from holding a slot forever.
-        const tv = std.posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
-        const rc = std.os.linux.setsockopt(stream.socket.handle, 1, 0x1006, @ptrCast(&tv), @sizeOf(@TypeOf(tv)));
-        if (std.os.linux.errno(rc) != .SUCCESS) {
-            // Best effort only; the server runs without the timeout.
-        }
+    const handle = stream.socket.handle;
+    switch (comptime builtin.os.tag) {
+        .linux => linuxSetSocketTimeouts(handle, seconds),
+        .windows => windowsSetSocketTimeouts(handle, seconds),
+        .macos => macosSetSocketTimeouts(handle, seconds),
+        else => {},
     }
 }
+
+/// Log the timeout failure at most once per process.
+fn logTimeoutFailureOnce(comptime what: []const u8) void {
+    const State = struct {
+        var warned = std.atomic.Value(bool).init(false);
+    };
+    if (State.warned.swap(true, .acq_rel)) return;
+    std.debug.print("skiff: warning: could not set {s} socket timeout; idle connections may linger\n", .{what});
+}
+
+fn logTimeoutFailure(comptime what: []const u8) void {
+    logTimeoutFailureOnce(what);
+}
+
+fn linuxSetSocketTimeouts(handle: std.posix.fd_t, seconds: u32) void {
+    const tv = std.posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
+    const optval = @as([*]const u8, @ptrCast(&tv));
+    const len: u32 = @sizeOf(@TypeOf(tv));
+    const rcv = std.os.linux.setsockopt(handle, 1, std.os.linux.SO.RCVTIMEO, optval, len);
+    if (std.os.linux.errno(rcv) != .SUCCESS) logTimeoutFailure("read");
+    const snd = std.os.linux.setsockopt(handle, 1, std.os.linux.SO.SNDTIMEO, optval, len);
+    if (std.os.linux.errno(snd) != .SUCCESS) logTimeoutFailure("write");
+}
+
+fn windowsSetSocketTimeouts(handle: std.posix.fd_t, seconds: u32) void {
+    _ = handle;
+    _ = seconds;
+    // Zig's Windows sockets are AFD handles; the AFD driver does not support
+    // SO_RCVTIMEO/SO_SNDTIMEO (confirmed: NtDeviceIoControlFile returns
+    // STATUS_NOT_SUPPORTED), and the Winsock timeout lives in ws2_32.dll,
+    // which does not apply to AFD handles. There is no stdlib path to an
+    // idle read timeout on Windows; documented in docs/decisions.md.
+}
+
+fn macosSetSocketTimeouts(handle: std.posix.fd_t, seconds: u32) void {
+    const Timeval = extern struct { sec: i64, usec: i32 };
+    const tv = Timeval{ .sec = @intCast(seconds), .usec = 0 };
+    const rc = setsockopt(handle, 0xffff, 0x1006, @ptrCast(&tv), @sizeOf(Timeval));
+    if (rc != 0) logTimeoutFailure("read");
+    const rc2 = setsockopt(handle, 0xffff, 0x1005, @ptrCast(&tv), @sizeOf(Timeval));
+    if (rc2 != 0) logTimeoutFailure("write");
+}
+
+extern "c" fn setsockopt(
+    fd: std.posix.fd_t,
+    level: i32,
+    optname: i32,
+    optval: [*]const u8,
+    optlen: u32,
+) i32;
 
 fn installSignalHandlers() void {
     if (builtin.os.tag == .windows) return; // Default Ctrl+C behavior is fine.
