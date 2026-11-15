@@ -9,12 +9,16 @@ Running log of decisions that were not obvious from the PRD. Newest last.
 requires locking one version instead of guessing the API. README and CI pin
 the same version.
 
-## Raw HTTP over `std.Io.net`, no `std.http` (2026-11-16)
+## HTTP layer: `std.http.Server` (2026-11-16, supersedes the raw-socket plan)
 
-The server speaks HTTP/1.1 directly on sockets instead of using `std.http`.
-Reasons: full control over Range responses, keep-alive and header size limits,
-no dependency on a high-churn API surface, and a smaller binary. The cost is a
-hand-written request parser, which is covered by unit tests.
+The server speaks HTTP/1.1 through `std.http.Server` (receiveHead +
+respond/respondStreaming) instead of a hand-written parser. The PRD asks for
+it implicitly (keep-alive, Range, 304) and it is the better bet on a
+fast-moving std API: correctness over a few KB of binary. File responses use
+`respondStreaming` with `content_length`; HEAD is handled by the eliding
+writer transparently. Directory and file paths are canonicalized with
+`realPathFile` and checked to stay under the root realpath, which is what
+closes symlink escapes (verified with a junction to `C:\Windows`).
 
 ## One thread per connection, bounded (2026-11-16)
 
@@ -26,8 +30,38 @@ the PRD.
 ## Keep-alive with idle timeout (2026-11-16)
 
 HTTP/1.1 connections stay open by default, `Connection: close` is honored, and
-an idle read times out after 30 seconds (via `SO_RCVTIMEO`) so a silent client
-cannot hold a slot forever. Headers are capped at 16 KB.
+an idle read times out after 30 seconds so a silent client cannot hold a slot
+forever.
+
+- Linux: `SO_RCVTIMEO`/`SO_SNDTIMEO` via `std.os.linux.SO` constants (the
+  correct per-architecture values, not the MIPS 0x1006).
+- macOS: `setsockopt` via libSystem (always linked on Darwin).
+- Windows: not available. Zig's sockets are AFD file handles, and the AFD
+  driver rejects `SO_RCVTIMEO`/`SO_SNDTIMEO` with `STATUS_NOT_SUPPORTED`
+  (confirmed by running it). The timeout lives in ws2_32.dll, which does not
+  apply to AFD handles. No stdlib path exists for an idle read timeout on
+  Windows without undocumented ioctls. Accepted residual: idle connections
+  hold one of 64 slots, same as before, bounded in total.
+
+## fnmatch-ish case sensitivity (2026-11-16)
+
+Containment compares paths byte-wise, ASCII case-insensitive on Windows and
+case-sensitive elsewhere. Non-ASCII root names with unusual case folding fail
+toward 403, which is the safe direction.
+
+## Alternate Data Streams (2026-11-16)
+
+Colons in path segments are rejected on Windows because they are ADS
+syntax (`file.txt:Zone.Identifier`). On Linux and macOS, ':' is allowed in
+file names and requests for such files work normally.
+
+## fd-verified containment (2026-11-16)
+
+The check that a served file stays under the root realpath is enforced on the
+open file handle itself, not on a re-resolved path. On Linux the check uses
+`/proc/self/fd/N`; on Windows it uses `GetFinalPathNameByHandle` (via
+`std.Io.Threaded`). There is no check-then-open window on either platform.
+macOS falls back to realpath-then-open (documented residual).
 
 ## Weak ETag from size and mtime (2026-11-16)
 
