@@ -46,7 +46,11 @@ jobs:
           ZIG_DIR="${{ matrix.zig-package }}"
           ZIG_DIR="${ZIG_DIR%.tar.xz}"
           ZIG_DIR="${ZIG_DIR%.zip}"
-          echo "$PWD/$ZIG_DIR" >> "$GITHUB_PATH"
+          if command -v cygpath >/dev/null; then
+            echo "$(cygpath -w "$PWD/$ZIG_DIR")" >> "$GITHUB_PATH"
+          else
+            echo "$PWD/$ZIG_DIR" >> "$GITHUB_PATH"
+          fi
 
       - name: Version
         run: zig version
