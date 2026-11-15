@@ -117,6 +117,14 @@ jobs:
             echo
             awk '/^## v/{found=1; next} found' CHANGELOG.md
             echo
+            echo "## Usage"
+            echo
+            echo '```bash'
+            echo 'skiff                    # serve the current folder at http://127.0.0.1:8080'
+            echo 'skiff -d dist -p 3000    # serve ./dist on port 3000'
+            echo 'skiff --host 0.0.0.0     # open to the local network'
+            echo '```'
+            echo
             echo '<br>'
             echo
             echo '---'
@@ -126,6 +134,14 @@ jobs:
             echo "# Bahasa Indonesia"
             echo
             awk '/^## v/{found=1; next} found' CHANGELOG.id.md
+            echo
+            echo "## Penggunaan"
+            echo
+            echo '```bash'
+            echo 'skiff                    # sajikan folder saat ini di http://127.0.0.1:8080'
+            echo 'skiff -d dist -p 3000    # sajikan ./dist di port 3000'
+            echo 'skiff --host 0.0.0.0     # buka ke jaringan lokal'
+            echo '```'
           } > release-notes.md
           cat release-notes.md
           gh release create "$tag" artifacts/* \
