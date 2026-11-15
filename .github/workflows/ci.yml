@@ -26,7 +26,7 @@ jobs:
           - os: windows-latest
             zig-package: zig-x86_64-windows-0.17.1.zip
             zig-sha256: b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e
-          - os: macos-14
+          - os: macos-latest
             zig-package: zig-aarch64-macos-0.17.1.tar.xz
             zig-sha256: 75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d
     steps:
