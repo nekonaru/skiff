@@ -61,6 +61,10 @@ jobs:
       - name: Build (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
 
+      - name: Smoke test
+        shell: bash
+        run: python3 scripts/smoke.py
+
   build-matrix:
     name: Build all targets
     runs-on: ubuntu-latest
