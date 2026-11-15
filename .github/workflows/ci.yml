@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: "0.17.1"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            zig-package: zig-x86_64-linux-0.17.1.tar.xz
+            zig-sha256: 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a
+          - os: windows-latest
+            zig-package: zig-x86_64-windows-0.17.1.zip
+            zig-sha256: b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e
+          - os: macos-13
+            zig-package: zig-x86_64-macos-0.17.1.tar.xz
+            zig-sha256: 9af07b20319fbd0c92ee46ad23e81d6a782b1aaea2cfb8dcbff35f1d2c7ddbb7
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 5 -o "$ZIG_PACKAGE" "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_PACKAGE}"
+          echo "${ZIG_SHA256}  ${ZIG_PACKAGE}" | sha256sum -c -
+          case "$ZIG_PACKAGE" in
+            *.zip) 7z x -y "$ZIG_PACKAGE" >/dev/null ;;
+            *.tar.xz) tar -xJf "$ZIG_PACKAGE" ;;
+          esac
+          ZIG_DIR="${ZIG_PACKAGE%.tar.xz}"
+          ZIG_DIR="${ZIG_DIR%.zip}"
+          echo "$PWD/$ZIG_DIR" >> "$GITHUB_PATH"
+
+      - name: Version
+        run: zig version
+
+      - name: Test
+        run: zig build test
+
+      - name: Build (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+  build-matrix:
+    name: Build all targets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 5 -o zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a  zig.tar.xz" | sha256sum -c -
+          tar -xJf zig.tar.xz
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Cross-compile all targets and check sizes
+        shell: bash
+        run: bash scripts/release.sh
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build-matrix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 5 -o zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a  zig.tar.xz" | sha256sum -c -
+          tar -xJf zig.tar.xz
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Build release artifacts
+        shell: bash
+        run: bash scripts/release.sh --artifacts
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          {
+            echo "# English"
+            echo
+            awk '/^## v/{found=1; next} found' CHANGELOG.md
+            echo
+            echo '<br>'
+            echo
+            echo '---'
+            echo
+            echo '<br>'
+            echo
+            echo "# Bahasa Indonesia"
+            echo
+            awk '/^## v/{found=1; next} found' CHANGELOG.id.md
+          } > release-notes.md
+          cat release-notes.md
+          gh release create "$tag" artifacts/* \
+            --title "Skiff $tag" \
+            --notes-file release-notes.md
