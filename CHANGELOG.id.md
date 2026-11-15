@@ -16,11 +16,11 @@ Rilis publik pertama. Skiff menyajikan folder mana pun sebagai situs statis lewa
 - **Access log.** Method, path, status, ukuran dan durasi per request, bisa disenyapkan dengan `--quiet`.
 - **Mode SPA.** `--spa` fallback ke `index.html` untuk path tidak dikenal.
 - **CORS.** `--cors` menambah `Access-Control-Allow-Origin: *` ke setiap response.
-- **Keep-alive.** Koneksi persisten HTTP/1.1; pool koneksi terbatas (64) dan idle timeout di Linux.
+- **Keep-alive.** Koneksi persisten HTTP/1.1; pool koneksi terbatas (64) dan idle timeout di Linux dan macOS.
 
 ### Peningkatan
 
-- **Ukuran.** Binary ReleaseSmall tetap di bawah 1 MB (sekitar 570 KB) untuk kelima target.
+- **Ukuran.** Binary ReleaseSmall jauh di bawah 1 MB untuk kelima target.
 - **Redirect direktori.** Request ke direktori tanpa trailing slash di-redirect dengan 301.
 
 ### Perbaikan bug

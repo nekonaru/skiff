@@ -16,11 +16,11 @@ First public release. Skiff serves any folder as a static website over HTTP with
 - **Access log.** Method, path, status, size and duration per request, suppressible with `--quiet`.
 - **SPA mode.** `--spa` falls back to `index.html` for unknown paths.
 - **CORS.** `--cors` adds `Access-Control-Allow-Origin: *` to every response.
-- **Keep-alive.** HTTP/1.1 persistent connections; scoped connection pool (64 max) and idle timeout on Linux.
+- **Keep-alive.** HTTP/1.1 persistent connections; scoped connection pool (64 max) and idle timeout on Linux and macOS.
 
 ### Improvements
 
-- **Size.** ReleaseSmall binaries stay under 1 MB (about 570 KB) for all five targets.
+- **Size.** ReleaseSmall binaries stay well under 1 MB for all five targets.
 - **Directory redirects.** Requests to directories without a trailing slash redirect with 301.
 
 ### Bug fixes
