@@ -4,7 +4,7 @@
     .version = "0.1.0",
     // This fingerprint and the package name together form a globally unique
     // package identifier. Do not change it.
-    .fingerprint = 0x715c1ff2026a11d0,
+    .fingerprint = 0x4407e5e379c51601,
     // Zig 0.17.1 is the pinned toolchain. API std::Io::net and std::process.Init
     // are tied to it. See README for the exact version.
     .minimum_zig_version = "0.17.1",

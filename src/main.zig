@@ -1,5 +1,6 @@
 const std = @import("std");
 const cli = @import("cli.zig");
+const server = @import("server.zig");
 
 pub const version = cli.version;
 
@@ -42,11 +43,16 @@ pub fn main(init: std.process.Init) !void {
             try out.print("skiff {s}\n", .{version});
             try out.flush();
         },
-        .config => |_| {
-            // Serving lands in milestone M1. Skeleton exits 0 so the
-            // toolchain and CI can be exercised end to end.
-            try out.print("skiff {s} (skeleton)\n", .{version});
-            try out.flush();
+        .config => |cfg| {
+            server.run(alloc, io, cfg, out) catch |err| {
+                switch (err) {
+                    error.InvalidHost => try out.print("skiff: '--host {s}' is not a usable address (examples: 127.0.0.1, 0.0.0.0, ::1)\n", .{cfg.host}),
+                    error.CannotOpenRoot => try out.print("skiff: cannot open root directory '{s}'\n", .{cfg.dir}),
+                    error.ServeFailed => try out.print("skiff: failed to accept connections (fd limit?)\n", .{}),
+                }
+                try out.flush();
+                std.process.exit(1);
+            };
         },
     }
 }

@@ -37,13 +37,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fSL --retry 5 -o "$ZIG_PACKAGE" "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_PACKAGE}"
-          echo "${ZIG_SHA256}  ${ZIG_PACKAGE}" | sha256sum -c -
-          case "$ZIG_PACKAGE" in
-            *.zip) 7z x -y "$ZIG_PACKAGE" >/dev/null ;;
-            *.tar.xz) tar -xJf "$ZIG_PACKAGE" ;;
+          curl -fSL --retry 5 -o "${{ matrix.zig-package }}" "https://ziglang.org/download/${ZIG_VERSION}/${{ matrix.zig-package }}"
+          echo "${{ matrix.zig-sha256 }}  ${{ matrix.zig-package }}" | sha256sum -c -
+          case "${{ matrix.zig-package }}" in
+            *.zip) 7z x -y "${{ matrix.zig-package }}" >/dev/null ;;
+            *.tar.xz) tar -xJf "${{ matrix.zig-package }}" ;;
           esac
-          ZIG_DIR="${ZIG_PACKAGE%.tar.xz}"
+          ZIG_DIR="${{ matrix.zig-package }}"
+          ZIG_DIR="${ZIG_DIR%.tar.xz}"
           ZIG_DIR="${ZIG_DIR%.zip}"
           echo "$PWD/$ZIG_DIR" >> "$GITHUB_PATH"
 

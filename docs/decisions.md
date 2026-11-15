@@ -9,12 +9,16 @@ Running log of decisions that were not obvious from the PRD. Newest last.
 requires locking one version instead of guessing the API. README and CI pin
 the same version.
 
-## Raw HTTP over `std.Io.net`, no `std.http` (2026-11-16)
+## HTTP layer: `std.http.Server` (2026-11-16, supersedes the raw-socket plan)
 
-The server speaks HTTP/1.1 directly on sockets instead of using `std.http`.
-Reasons: full control over Range responses, keep-alive and header size limits,
-no dependency on a high-churn API surface, and a smaller binary. The cost is a
-hand-written request parser, which is covered by unit tests.
+The server speaks HTTP/1.1 through `std.http.Server` (receiveHead +
+respond/respondStreaming) instead of a hand-written parser. The PRD asks for
+it implicitly (keep-alive, Range, 304) and it is the better bet on a
+fast-moving std API: correctness over a few KB of binary. File responses use
+`respondStreaming` with `content_length`; HEAD is handled by the eliding
+writer transparently. Directory and file paths are canonicalized with
+`realPathFile` and checked to stay under the root realpath, which is what
+closes symlink escapes (verified with a junction to `C:\Windows`).
 
 ## One thread per connection, bounded (2026-11-16)
 
