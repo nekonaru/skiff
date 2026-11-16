@@ -1,9 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Skiff mark">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Skiff mark">
   <title>Skiff</title>
-  <!-- Sail -->
-  <path d="M176 88 L176 248 L372 248 Z" fill="#E86E1C" stroke="#E86E1C" stroke-width="38" stroke-linejoin="round"/>
-  <!-- Hull (outline) -->
-  <path d="M112 296 L400 296 L344 376 L168 376 Z" fill="none" stroke="#F5F2E9" stroke-width="26" stroke-linejoin="round" stroke-linecap="round"/>
-  <!-- Wave -->
-  <path d="M88 424 L132 380 L172 424 L212 380 L252 424 L292 380 L332 424 L372 380 L416 424" fill="none" stroke="#E86E1C" stroke-width="19" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M88 42 L88 126 L172 126 Z" fill="#E86E1C" stroke="#E86E1C" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M64 150 L192 150 L171.2 186 L84.8 186 Z" fill="none" stroke="#F5F2E9" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M48 208 L68 192 L88 208 L108 192 L128 208 L148 192 L168 208 L188 192 L208 208" fill="none" stroke="#E86E1C" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
